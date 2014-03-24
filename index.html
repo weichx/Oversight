@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title></title>
+    <script src="src/oversight.js"></script>
+</head>
+<body>
+<script>
+
+    var fn = function(){};
+    fn.c = function() {
+        alert('c');
+    };
+
+    var target0 = {};
+
+    var target1 = {
+        a: {
+            b: fn
+        }
+    };
+
+    Oversight.addObserver(target0, 'a.b.c', 'before', function() {
+        alert('worked');
+    });
+
+    Oversight.addObserver(target1, 'a.b.c', 'before', function() {
+        alert('worked again');
+    });
+
+    console.dir(fn);
+//
+//    Oversight.addObserver(target, 'a.b.c', 'after', function() {
+//        alert('sure did!');
+//    });
+
+    Oversight.unboundSet(target0, 'a', {
+        b: fn
+    });
+
+
+    target0.a.b.c();
+
+    Oversight.unboundSet(target0, 'a', null);
+
+    //target0.a.b.c();
+    //target1.a.b.c();
+
+//test as fn
+    //test as obj
+    //test w/ levels
+    //test w/ onSet vs before
+</script>
+</body>
+</html>
+
