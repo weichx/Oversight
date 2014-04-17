@@ -1,0 +1,3 @@
+<%= contents %>
+Oversight.Errors = Errors; //expose errors for testing
+module.exports = Oversight;

@@ -1,0 +1,4 @@
+window.Oversight = (function() {
+    <%= contents %>
+return Oversight;
+})();

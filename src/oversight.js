@@ -1,220 +1,102 @@
-var Chain = function(path, advice, callback, context, remover, depth) {
-    this.path = path;
-    this.advice = advice;
-    this.callback = callback;
-    this.context = context;
-    this.depth = depth || 0;
-    this.remover = remover;
-    this.keyName = path[this.depth];
-    this.next = null;
-};
-
-Chain.prototype.matches = function(keyName) {
-    return this.keyName === keyName;
-};
-
-Chain.prototype.walkAndDestroy = function(target) {
-    if(target) {
-        var chains = target.__observers.__chains;
-        var i = chains.indexOf(this);
-        chains.splice(i, 1);
-        if(this.depth === this.path.length - 1) {
-            Oversight.remove(target[this.keyName], this.remover);
-        } else {
-            this.next.walkAndDestroy(target[this.keyName]);
-        }
-    }
-};
-
-Chain.prototype.walkAndCreate = function(target) {
-    if(target) {
-        Oversight.makeKeyObservable(target, this.path[this.depth]);
-        if(this.depth === this.path.length - 1) {
-            Oversight[this.advice](target, this.path[this.depth], this.callback, this.context, this.remover);
-        } else {
-            var observers = target.__observers;
-            observers.__chains = observers.__chains || [];
-            observers.__chains.push(this);
-            this.next = new Chain(this.path, this.advice, this.callback, this.context, this.remover, ++this.depth);
-            this.next.walkAndCreate(target[this.keyName]);
-        }
-    }
-};
-
-var JoinPoint = {
-    stack:  [],
-    topStackItem: null,
-    setup: function(context, fnStack, args) {
-        this.topStackItem = {
-            context: context,
-            functionStack: fnStack,
-            functionStackPointer: 0,
-            args: args
-        };
-        this.stack.push(this.topStackItem);
-    },
-    teardown: function() {
-        this.stack.pop();
-        this.topStackItem = null;
-    }
-};
-
-var Errors = {
-    //todo this might also be because advice was not provided if result of addObserver
-    targetNotObservable: function () {
-        return "Target is not observable. The target of an observer function must of type `function` or `object`. " +
-            "If you are observing a free function (any function that is not invoked via obj.myFn) use `var fn = Oversight.observify(fn)`" +
-            " on your function first, then use the returned reference as input to Oversight observe functions.";
-    },
-    invalidFreeFunctionAdvice: function (advice) {
-        return 'The given function advice: ' + advice + ', is not valid. Free functions ' +
-            'can only take function advice: [before, after, afterReturn, around]';
-    },
-    invalidTargetFunctionAdvice: function (advice) {
-        return 'The given function advice: ' + advice + ', is not valid. Valid advice for ' +
-            'this target object is: '
-            + Oversight.functionAdvice.concat(Oversight.propertyAdvice).join(" ") + '.';
-
-    },
-    targetNotObjectOrFunction: function () {
-        return 'The target of an observer function must be a function or object';
-    },
-    targetOfSetGetNotObjectOrFunction: function (target) {
-        return 'The target of a `set` or `get` function must be a function or an object. Your target was: ' + target;
-    },
-    missingCallback: function () {
-        return 'You must provide a callback to all observer functions!'
-    }
-};
-var createRemover = function (advice, key) {
-    return {
-        removalId: generateNextObserverId(),
-        advice: advice,
-        key: key
-    };
-};
-
-var createObserverObject = function (removalId, fn, ctx) {
-    return {
-        removalId: removalId,
-        fn: fn,
-        ctx: ctx
-    };
-};
-
 var Oversight = {};
-Oversight.functionAdvice = ['before', 'after', 'around', 'afterReturn'];
-Oversight.propertyAdvice = ['onGet', 'onSet', 'aroundSet', 'aroundGet'];
 
-Oversight.proceed = function() {
-    var stackItem = JoinPoint.topStackItem;
-    if (!stackItem) return undefined;
-    var nextFn = stackItem.functionStack[stackItem.functionStackPointer++];
-    if (nextFn) {
-        if (arguments.length != 0) stackItem.args = arguments;
-        return nextFn.fn.apply(nextFn.context, stackItem.args);
-    }
-    return undefined;
-};
+Oversight.UseCallingContext = -1; //'CALLING_CONTEXT';
+var functionAdvice = ['before', 'after', 'around', 'afterReturn'];
+var propertyAdvice = ['onGet', 'onSet', 'aroundSet', 'aroundGet'];
 
-Oversight.assert = function (condition, msg) {
-    if (!condition) throw  new Error(msg);
-};
-
-Oversight.makeKeyObservable = function (target, key) {
+var makeKeyObservable = function (target, key) {
     if (!target.__observers) target.__observers = Object.create(null);
     if (!target.__observers[key]) target.__observers[key] = Object.create(null);
 };
 
-Oversight.addAdviceToKey = function (target, key, advice) {
+var addAdviceToKey = function (target, key, advice) {
     if (!target.__observers[key][advice]) target.__observers[key][advice] = [];
 };
 
-Oversight.onGet = function (target, prop, fn, ctx, remover) {
-    remover = remover || createRemover('onGet', prop);
-    this.makeKeyObservable(target, prop);
-    this.addAdviceToKey(target, prop, 'onGet');
-    target.__observers[prop].onGet.push(createObserverObject(remover.removalId, fn, ctx));
-    return remover;
-};
-
-Oversight.onSet = function (target, prop, fn, ctx, remover) {
-    remover = remover || createRemover('onSet', prop);
-    this.makeKeyObservable(target, prop);
-    this.addAdviceToKey(target, prop, 'onSet');
-    target.__observers[prop].onSet.push(createObserverObject(remover.removalId, fn, ctx));
-    return remover;
-};
-
-var generateFnAdviceFn = function (advice) {
-    return function (target, prop, fn, ctx, remover) {
-        this.makeKeyObservable(target, prop);
-        this.addAdviceToKey(target, prop, advice);
-        remover = remover || createRemover(advice, prop);
-        target.__observers[prop][advice].push(createObserverObject(remover.removalId, fn, ctx));
-        if (typeof target[prop] === 'function' && !target[prop].__observified) {
-            target[prop] = Oversight.observify(target, prop, target[prop]);
+var invokeApply = function(thisArg, observerList, args) {
+    var i = observerList && observerList.length;
+    var obj, ctx;
+    while (i--) {
+        obj = observerList[i];
+        ctx = validateContext(thisArg, obj.contextId);
+        if(ctx) {
+            obj.fn.apply(ctx, args);
+        } else {
+            observerList.splice(i, 1);
         }
-        return remover;
+    }
+};
+
+var invokeCall = function(thisArg, observerList, arg0, arg1) {
+    var i = observerList && observerList.length;
+    var obj, ctx;
+    while (i--) {
+        obj = observerList[i];
+        ctx = validateContext(thisArg, obj.contextId);
+        if(ctx) {
+            obj.fn.call(ctx, arg0, arg1);
+        } else {
+            observerList.splice(i, 1);
+        }
     }
 };
 
 Oversight.after = generateFnAdviceFn('after');
 Oversight.before = generateFnAdviceFn('before');
 Oversight.afterReturn = generateFnAdviceFn('afterReturn');
+Oversight.around = generateFnAdviceFn('around');
+Oversight.onGet = generateFnAdviceFn('onGet');
+Oversight.onSet = generateFnAdviceFn('onSet');
 
-var generateNextObserverId = (function () {
-    var id = 0;
-    return function generateNextObserverIdClosure() {
-        return id++;
-    }
-})();
+var observeFreeFunction = function (target, advice, callback, context, remover) {
+    assert(target.__observers, Errors.targetNotObservable());
+    assert(functionAdvice.indexOf(advice) !== -1, Errors.invalidFreeFunctionAdvice(advice));
+    assert(typeof callback === 'function', Errors.missingCallback());
 
-//private
-Oversight.observeFreeFunction = function (target, advice, callback, context, remover) {
-    Oversight.assert(target.__observers, Errors.targetNotObservable());
-    Oversight.assert(Oversight.functionAdvice.indexOf(advice) !== -1, Errors.invalidFreeFunctionAdvice(advice));
-    Oversight.assert(typeof callback === 'function', Errors.missingCallback());
-
-    remover = remover || createRemover(advice);
+    var contextId = registerContext(context); //register context and use that reference to pass it around
+    remover = remover || new Remover(advice);
     if (!target.__observers[advice]) target.__observers[advice] = [];
-    target.__observers[advice].push(createObserverObject(remover.removalId, callback, context));
+    var action = (advice === 'before') ? 'push' : 'unshift';
+    target.__observers[advice][action](new Observer(remover.removalId, callback, contextId));
     return remover;
 };
 
-//private
-Oversight.observeTargetedFunction = function (target, path, advice, callback, context) {
-    Oversight.assert(
-        Oversight.functionAdvice.indexOf(advice) !== -1 ||
-            Oversight.propertyAdvice.indexOf(advice) !== -1,
+var observeTargetedFunction = function (target, path, advice, callback, context) {
+    assert(typeof callback === 'function', Errors.missingCallback());
+    assert(functionAdvice.indexOf(advice) !== -1 ||  propertyAdvice.indexOf(advice) !== -1,
         Errors.invalidTargetFunctionAdvice(advice)
     );
-    Oversight.assert(typeof callback === 'function', Errors.missingCallback());
-
+    if(!target.__observers) target.__observers = {};
+    var contextId = registerContext(context); //register context and use that reference to pass it around
     var splitPath = path.split('.');
-    var remover = createRemover(advice, splitPath[splitPath.length - 1]);
+    var remover = new Remover(advice, splitPath[splitPath.length - 1]);
     if (splitPath.length !== 1) {
-        var chain = new Chain(splitPath, advice, callback, context, remover);
+        var chain = new Chain(splitPath, advice, callback, contextId, remover);
         chain.walkAndCreate(target);
     } else {
-        Oversight[advice](target, path, callback, context, remover);
+        makeKeyObservable(target, path);
+        addAdviceToKey(target, path, advice);
+        remover = remover || new Remover(advice, path);
+        var action = (advice === 'before') ? 'push' : 'unshift' ;
+        target.__observers[path][advice][action](new Observer(remover.removalId, callback, contextId));
+        if (typeof target[path] === 'function' && !target.__observers[path].__observified) {
+            target[path] = Oversight.observify(target, path, target[path]);
+        }
     }
     return remover;
 };
 
-//private? probably better to call this through Oversight.before, after, etc
-Oversight.addObserver = function (target, path, advice, callback, context) {
-    Oversight.assert(typeof target === 'object' || typeof target === 'function', Errors.targetNotObjectOrFunction());
-    //context = Oversight.register(target, context); register context and use that reference to pass it around
-    var remover;
+var addObserver = function (target, advice, path, callback, context) {
+    assert(typeof target === 'object' || typeof target === 'function', Errors.targetNotObjectOrFunction());
     if (typeof path === 'string' && typeof advice === 'string') {
-        remover = Oversight.observeTargetedFunction(target, path, advice, callback, context);
+        context = context || target;
+        var remover = observeTargetedFunction(target, path, advice, callback, context);
     } else {
         //reshuffle some variables for semantic sense
         context = callback;
-        callback = advice;
-        advice = path;
-        remover = Oversight.observeFreeFunction(target, advice, callback, context);
+        callback = path;
+        context = context || target;
+        remover = observeFreeFunction(target, advice, callback, context);
     }
     return remover;
 };
@@ -236,36 +118,19 @@ Oversight.remove = function (target, remover) {
 
 Oversight.observify = function (target, key, fn) {
     var observers = null;
-
     //todo use a flag to generate this function, would let us use call instead of apply for massive speed boost
     //todo use another flag to generate this function and unroll it
     var baseObserverFn = function observifiedFunction() {
-        var before = observers.before;
-        var after = observers.after;
-        var afterReturn = observers.afterReturn;
-        var i = before && before.length;
-        var obj = null;
-        while (i--) {
-            obj = before[i];
-            obj.fn.apply(obj.ctx, arguments);
-        }
+        invokeApply(this, observers.before, arguments);
         var retn = observers.original.apply(this, arguments);
-        i = after && after.length;
-        while (i--) {
-            obj = after[i];
-            obj.fn.apply(obj.ctx, arguments);
-        }
+        invokeApply(this, observers.after, arguments);
         Array.prototype.unshift.call(arguments, retn);
-        i = afterReturn && afterReturn.length;
-        while (i--) {
-            obj = afterReturn[i];
-            obj.fn.apply(obj.ctx, arguments);
-        }
+        invokeApply(this, observers.afterReturn, arguments);
         return retn;
     };
 
     var observified = function() {
-        JoinPoint.setup(this, observers.aroundStack, arguments);
+        JoinPoint.setup(this, observers.around, arguments);
         var retn = Oversight.proceed();
         JoinPoint.teardown();
         return retn;
@@ -273,29 +138,32 @@ Oversight.observify = function (target, key, fn) {
 
     //free function case
     if (arguments.length === 1) {
+        if(target.__observers) return target;
+        fn = target;
         observified.__observers = {
-            original: target,
-            aroundStack: [{removalId:NaN, ctx:null, fn:baseObserverFn}]
+            __observified: true
         };
         observers = observified.__observers;
-        observified.prototype = target.prototype;
-        for (var item in target) {
-            if (target.hasOwnProperty(item)) {
-                observified[item] = target[item];
-            }
-        }
     } else {
         observers = target.__observers[key];
-        observers.aroundStack = [{removalId:NaN, ctx:null, fn:baseObserverFn}];
-        observers.original = fn;
-        observified.prototype = fn.prototype;
-        for (item in fn) {
-            if (fn.hasOwnProperty(item)) {
-                observified[item] = fn[item];
-            }
+        observers.__observified = true;
+    }
+    for (var item in fn) {
+        if (fn.hasOwnProperty(item)) {
+            observified[item] = fn[item];
         }
     }
-    observified.__observified = true;
+    observers.around = observers.around || [];
+    var lastIndex = observers.around.length - 1;
+    var observerObject = new Observer(-1, baseObserverFn, Oversight.UseCallingContext);
+    //make sure we aren't double adding the baseObserverFn, which can happen if a key was set to a fn, then unset, then reset
+    if(observers.around[lastIndex] && observers.around[lastIndex].removalId === -1) {
+        observers.around[observers.around.length - 1] = observerObject;
+    } else {
+        observers.around.push(observerObject);
+    }
+    observers.original = fn;
+    observified.prototype = fn.prototype;
     return observified;
 };
 //todo| consider a partial version of `set` and `get` that could be 'plugged in' to
@@ -307,28 +175,26 @@ Oversight.observify = function (target, key, fn) {
 //be as fast as possible and splitting an input string and traversing the path
 //adds extra bloat to this code which should be lean.
 Oversight.unboundSet = function (target, prop, value) {
-    Oversight.assert(typeof target === 'function' || typeof target === 'object',
+    assert(typeof target === 'function' || typeof target === 'object',
         Errors.targetOfSetGetNotObjectOrFunction(target));
 
     if (target.__observers && target.__observers[prop]) {
         var oldValue = target[prop];
         var observers = target.__observers[prop];
-        //todo can optimize this somewhat for replacing a fn with another fn
         if (typeof value === 'function') {
+            //need a full on observify here to inherit prototype and constructor attributes,
+            //close over new variables, and remove the old around[around.length - 1]
             target[prop] = Oversight.observify(target, prop, value);
         } else {
+            //make sure we delete the reference to any original fns so it's gc'd if need be
             observers.original = null;
             target[prop] = value;
         }
         var newValue = target[prop];
         var onSetObservers = observers.onSet;
-        var i = onSetObservers && onSetObservers.length;
-        while (i--) {
-            var obj = onSetObservers[i];
-            obj.fn.call(obj.context, newValue, oldValue);
-        }
+        invokeCall(this, onSetObservers, newValue, oldValue);
         var chains = target.__observers.__chains;
-        i = chains && chains.length;
+        var i = chains && chains.length;
         while(i--) {
             if(chains[i].matches(prop)) {
                 chains[i].next.walkAndDestroy(oldValue);
@@ -341,29 +207,37 @@ Oversight.unboundSet = function (target, prop, value) {
 };
 
 Oversight.unboundGet = function (target, prop) {
-    Oversight.assert(
-        typeof target === 'function' || typeof target === 'object',
-        Errors.targetOfSetGetNotObjectOrFunction(target)
-    );
+    assert(typeof target === 'function' || typeof target === 'object',
+        Errors.targetOfSetGetNotObjectOrFunction(target));
 
     var retn = target[prop];
     if (target.__observers && target.__observers[prop]) {
         var observers = target.__observers[prop];
-        if (typeof retn === 'function' && retn.__observified) {
+        if (typeof retn === 'function' && observers.__observified) {
             retn = observers.original;
         }
         var onGetObservers = observers.onGet;
-        if (onGetObservers) {
-            var i = onGetObservers.length;
-            while (i--) {
-                var obj = onGetObservers[i];
-                obj.fn.call(obj.context, retn);
-            }
-        }
+        invokeCall(this, onGetObservers, retn);
     }
     return retn;
 };
 
-Oversight.Errors = Errors;
-var module = module || {};
-module.exports = Oversight;
+//todo consider an onDestroy hook
+//todo might need an object to store all it's removers?
+Oversight.destroy = function(target) {
+    destroyContext(target);
+};
+
+Oversight.removeAllObservers = function(target) {
+    //remove downward chains
+    var chains = target.__observers.chains;
+    if(chains) {
+        var i = chains.length;
+        while(i--) {
+            //todo maybe target[prop] instead of target?
+            chains[i].next.walkAndDestroy(target);
+        }
+    }
+    debugger;
+    delete target.__observers;
+};

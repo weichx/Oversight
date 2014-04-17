@@ -1,0 +1,6 @@
+.idea
+node_modules
+test/coverage
+dist
+test/oversight-test.js
+index.html
