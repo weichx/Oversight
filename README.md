@@ -106,7 +106,7 @@ via npm:
 $ npm install oversight
 ```
 
-There will three files in `oversight/dist`, one for each of the common script loading methods:
+There are three files in `oversight/dist` (after building), one for each of the common script loading methods:
 - `oversight-amd.js` for use with require.js
 - `oversight-common.js` for use with common js style modules
 - `oversight-global.js` injects Oversight into the global scope
