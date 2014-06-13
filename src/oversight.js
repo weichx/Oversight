@@ -1,18 +1,23 @@
 var Oversight = {};
 
+//constant declaring that whichever context called a given callback should be used
 Oversight.UseCallingContext = -1; //'CALLING_CONTEXT';
 var functionAdvice = ['before', 'after', 'around', 'afterReturn'];
 var propertyAdvice = ['onGet', 'onSet', 'aroundSet', 'aroundGet'];
 
+//ensures that a key in an object is observable.
 var makeKeyObservable = function (target, key) {
     if (!target.__observers) target.__observers = Object.create(null);
     if (!target.__observers[key]) target.__observers[key] = Object.create(null);
 };
 
+//modifies an object's advice array to include `key` if it was missing.
 var addAdviceToKey = function (target, key, advice) {
     if (!target.__observers[key][advice]) target.__observers[key][advice] = [];
 };
 
+//invokes apply for each observer type in `observerList` using `args` as arguments
+//and `thisArg` for context.
 var invokeApply = function(thisArg, observerList, args) {
     var i = observerList && observerList.length;
     var obj, ctx;
@@ -22,11 +27,14 @@ var invokeApply = function(thisArg, observerList, args) {
         if(ctx) {
             obj.fn.apply(ctx, args);
         } else {
+            //if there is no context object, avoid a NullReferenceException by removing that observer
             observerList.splice(i, 1);
         }
     }
 };
 
+//invokes call for each observer type in `observerList` using `args` as arguments
+//and `thisArg` for context.
 var invokeCall = function(thisArg, observerList, arg0, arg1) {
     var i = observerList && observerList.length;
     var obj, ctx;
@@ -36,11 +44,13 @@ var invokeCall = function(thisArg, observerList, arg0, arg1) {
         if(ctx) {
             obj.fn.call(ctx, arg0, arg1);
         } else {
+            //if there is no context object, avoid a NullReferenceException by removing that observer
             observerList.splice(i, 1);
         }
     }
 };
 
+//generate observer functions
 Oversight.after = generateFnAdviceFn('after');
 Oversight.before = generateFnAdviceFn('before');
 Oversight.afterReturn = generateFnAdviceFn('afterReturn');
@@ -48,19 +58,22 @@ Oversight.around = generateFnAdviceFn('around');
 Oversight.onGet = generateFnAdviceFn('onGet');
 Oversight.onSet = generateFnAdviceFn('onSet');
 
+//called on functions that are not attached to objects, similar to a C style free function
 var observeFreeFunction = function (target, advice, callback, context, remover) {
     assert(target.__observers, Errors.targetNotObservable());
     assert(functionAdvice.indexOf(advice) !== -1, Errors.invalidFreeFunctionAdvice(advice));
     assert(typeof callback === 'function', Errors.missingCallback());
 
     var contextId = registerContext(context); //register context and use that reference to pass it around
-    remover = remover || new Remover(advice);
+    remover = remover || new Remover(advice);   //create a remover if we need one
     if (!target.__observers[advice]) target.__observers[advice] = [];
-    var action = (advice === 'before') ? 'push' : 'unshift';
+    var action = (advice === 'before') ? 'push' : 'unshift'; //based on the action, we need to either push this action
+    //to the front of the queue or end to retain proper execution order.
     target.__observers[advice][action](new Observer(remover.removalId, callback, contextId));
     return remover;
 };
 
+//called on functions that are attached to objects
 var observeTargetedFunction = function (target, path, advice, callback, context) {
     assert(typeof callback === 'function', Errors.missingCallback());
     assert(functionAdvice.indexOf(advice) !== -1 ||  propertyAdvice.indexOf(advice) !== -1,
@@ -68,12 +81,14 @@ var observeTargetedFunction = function (target, path, advice, callback, context)
     );
     if(!target.__observers) target.__observers = {};
     var contextId = registerContext(context); //register context and use that reference to pass it around
-    var splitPath = path.split('.');
+    var splitPath = path.split('.'); //we need the path as a string array for chains to work
     var remover = new Remover(advice, splitPath[splitPath.length - 1]);
+    //if the path is part of a chain (ie one.two), create sub chains
     if (splitPath.length !== 1) {
         var chain = new Chain(splitPath, advice, callback, contextId, remover);
         chain.walkAndCreate(target);
     } else {
+        //otherwise, just observify the key normally if needed
         makeKeyObservable(target, path);
         addAdviceToKey(target, path, advice);
         remover = remover || new Remover(advice, path);
@@ -228,6 +243,8 @@ Oversight.destroy = function(target) {
     destroyContext(target);
 };
 
+
+//todo this isn't yet functional
 Oversight.removeAllObservers = function(target) {
     //remove downward chains
     var chains = target.__observers.chains;
@@ -238,6 +255,5 @@ Oversight.removeAllObservers = function(target) {
             chains[i].next.walkAndDestroy(target);
         }
     }
-    debugger;
     delete target.__observers;
 };
